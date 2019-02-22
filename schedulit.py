@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup as bs
-from schedulit_utils import headers, POČETAK_SEMESTRA, KRAJ_SEMESTRA, DVORANE
+from schedulit_utils import HEADERS as headers, POČETAK_SEMESTRA, KRAJ_SEMESTRA, DVORANE
 from datetime import timedelta
 from dateutil.parser import parser
 
