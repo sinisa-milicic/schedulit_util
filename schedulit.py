@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup as bs
-from schedulit_utils import HEADERS as headers, POČETAK_SEMESTRA, KRAJ_SEMESTRA, DVORANE
+from schedulit_utils import HEADERS, POČETAK_SEMESTRA, DVORANE
 from datetime import timedelta
 from dateutil.parser import parser
 
@@ -16,17 +16,17 @@ class AvailabilityUndeterminable(Exception):
 cookies = None
 memberid = None
 
-dani = "ned,pon,uto,sri,čet,pet,sub".split(',')
+dani = "pon,uto,sri,čet,pet,sub,ned".split(',')
 
 
 def login(username, password):
     global cookies, memberid
     start = requests.get("http://arhiva.fet.unipu.hr/rezervacije",
-                         headers=headers)
+                         headers=HEADERS)
     cookies = start.cookies
     cookies.set("lang", "en_US", domain='arhiva.fet.unipu.hr')
     result = requests.post("http://arhiva.fet.unipu.hr/rezervacije/index.php",
-                           headers=headers,
+                           headers=HEADERS,
                            cookies=cookies,
                            data=dict(email=username,
                                      password=password,
@@ -38,7 +38,7 @@ def login(username, password):
         memberid = None
         raise InvalidLogin("Error logging in to phpSchedulit")
     result = requests.get("http://arhiva.fet.unipu.hr/rezervacije/ctrlpnl.php",
-                          headers=headers,
+                          headers=HEADERS,
                           cookies=cookies,
                           data=dict(email=username,
                                     password=password,
@@ -52,43 +52,58 @@ def login(username, password):
 
 
 class Termin:
-    def __init__(self, dvorana, dan, početak, kraj, opis):
+    def __init__(self, dvorana, dan, vrijeme_početka, kraj, opis, tjedana=15,
+                 polazni_tjedan=POČETAK_SEMESTRA):
         self.dvorana = dvorana
         self.machid = DVORANE[dvorana]
         try:
             dan = int(dan)
         except ValueError:
             if dan.lower() in dani:
-                dan = dani.index(dan)
+                dan = dani.index(dan.lower())
             else:
                 raise ValueError("Nepoznati dan")
 
-        self.dan = POČETAK_SEMESTRA + timedelta(dan-1)
-        self.dan_u_tjednu = dan
+        self.polazni_dan = polazni_tjedan \
+            + timedelta(dan-polazni_tjedan.weekday())
+        self.završni_dan = self.polazni_dan+timedelta(tjedana*7)
+        self.dan_u_tjednu = dan + 1
         self.opis = opis
-        self.početak = parser().parse(početak).time()
-        self.starttime = self.početak.hour * 60 + self.početak.minute
+        self.vrijeme_početka = parser().parse(vrijeme_početka).time()
+        self.starttime = self.vrijeme_početka.hour * 60 \
+            + self.vrijeme_početka.minute
         self.kraj = parser().parse(kraj).time()
         self.endtime = self.kraj.hour * 60 + self.kraj.minute
+        self.compute_data()
+
+    def compute_data(self):
+        polazni_dan = self.polazni_dan.strftime("%m/%d/%Y")
+        završni_dan = (self.završni_dan+timedelta(1)).strftime("%m/%d/%Y")
+        self.check_data = dict(start_date=polazni_dan,
+                               end_date=polazni_dan,
+                               starttime=self.starttime,
+                               endtime=self.endtime,
+                               frequency=1,
+                               interval="week",
+                               repeat_until=završni_dan,
+                               week_number=1,
+                               repeat_day=[self.dan_u_tjednu],
+                               machid=self.machid,
+                               scheduleid="sc149ae50fcaca66")
+
+        self.rezerviraj_data = self.check_data.copy()
+        self.rezerviraj_data.update(dict(summary=self.opis,
+                                         fn="create",
+                                         pending=0,
+                                         btnSubmit="Save"))
 
     def slobodno(self):
-        dan = self.dan.strftime("%m/%d/%Y")
-        data = dict(start_date=dan,
-                    end_date=dan,
-                    starttime=self.starttime,
-                    endtime=self.endtime,
-                    frequency=1,
-                    interval="week",
-                    repeat_until=KRAJ_SEMESTRA.strftime("%m/%d/%Y"),
-                    week_number=1,
-                    repeat_day=[self.dan_u_tjednu],
-                    machid=self.machid,
-                    scheduleid="sc149ae50fcaca66")
+        self.compute_data()
         check = requests.post("http://arhiva.fet.unipu.hr/rezervacije/"
                               "check.php",
-                              headers=headers,
+                              headers=HEADERS,
                               cookies=cookies,
-                              data=data)
+                              data=self.check_data)
         result = bs(check.content, 'html.parser')
         info = result.find("tr").attrs["class"]
         if 'messagePositive' in info:
@@ -99,33 +114,18 @@ class Termin:
             raise AvailabilityUndeterminable("Huh?!")
 
     def rezerviraj(self):
-        dan = self.dan.strftime("%m/%d/%Y")
-        data = dict(start_date=dan,
-                    end_date=dan,
-                    starttime=self.starttime,
-                    endtime=self.endtime,
-                    frequency=1,
-                    interval="week",
-                    repeat_until=KRAJ_SEMESTRA.strftime("%m/%d/%Y"),
-                    week_number=1,
-                    repeat_day=[self.dan_u_tjednu],
-                    machid=self.machid,
-                    scheduleid="sc149ae50fcaca66",
-                    summary=self.opis,
-                    fn="create",
-                    pending=0,
-                    btnSubmit="Save",
-                    memberid=memberid)
-        hdr = headers.copy()
+        self.compute_data()
+        hdr = HEADERS.copy()
         hdr["Referer"] = "http://arhiva.fet.unipu.hr/rezervacije/reserve.php"
         reserve = requests.post("http://arhiva.fet.unipu.hr/rezervacije/"
                                 "reserve.php",
                                 headers=hdr,
                                 cookies=cookies,
-                                data=data)
+                                data=self.rezerviraj_data)
+        print(reserve.content)
         return b'successfully' in reserve.content
 
     def __str__(self):
         dan = dani[self.dan_u_tjednu]
         return (f"Termin: {self.dvorana} ({dan}, "
-                "{self.početak}--{self.kraj}) {self.opis}")
+                f"{self.vrijeme_početka}--{self.kraj}) {self.opis}")
